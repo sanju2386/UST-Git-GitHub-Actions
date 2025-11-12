@@ -1,0 +1,102 @@
+name: Build and Push Docker Image (Manual with auto-tag)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Docker image tag (optional). If empty, the workflow auto-generates by bumping the latest git tag. When provided it must match v<MAJOR>.<MINOR>.<PATCH> (e.g., v1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: "muralisocial123/ust-test-image"
+
+    steps:
+      - name: Checkout repository (fetch all tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # necessary to access git tags
+
+      - name: Determine tag to use (validate or auto-generate)
+        id: determine_tag
+        run: |
+          set -euo pipefail
+          INPUT_TAG="${{ github.event.inputs.tag || '' }}"
+          echo "Input tag: '$INPUT_TAG'"
+
+          # Helper to validate vX.Y.Z
+          is_valid() {
+            echo "$1" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          }
+
+          if [ -n "$INPUT_TAG" ]; then
+            if is_valid "$INPUT_TAG"; then
+              TAG="$INPUT_TAG"
+              echo "Using provided valid tag: $TAG"
+            else
+              echo "::error::Provided tag ('$INPUT_TAG') is invalid. Expected pattern vMAJOR.MINOR.PATCH (example: v1.0.0). Failing workflow."
+              exit 1
+            fi
+          else
+            # No tag provided: auto-generate by bumping latest git tag
+            echo "No tag provided — generating automatically from git tags..."
+            # Ensure tags are available
+            git fetch --tags --prune
+
+            # find latest semantic tag like v1.2.3 (sorted by version)
+            LATEST_TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1 || true)
+
+            if [ -z "$LATEST_TAG" ]; then
+              TAG="v1.0.0"
+              echo "No existing tags found. Defaulting to $TAG"
+            else
+              echo "Latest tag found: $LATEST_TAG"
+              # extract numeric parts
+              MAJOR=$(echo "$LATEST_TAG" | sed -E 's/^v([0-9]+)\..*$/\1/')
+              MINOR=$(echo "$LATEST_TAG" | sed -E 's/^v[0-9]+\.([0-9]+)\..*$/\1/')
+              PATCH=$(echo "$LATEST_TAG" | sed -E 's/^v[0-9]+\.[0-9]+\.([0-9]+).*$/\1/')
+
+              # if extraction failed for safety, fallback
+              if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+                echo "Warning: failed to parse latest tag parts; defaulting to v1.0.0"
+                TAG="v1.0.0"
+              else
+                # bump patch
+                NEW_PATCH=$((PATCH + 1))
+                TAG="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+                echo "Auto-generated tag: $TAG (bumped patch from $PATCH to $NEW_PATCH)"
+              fi
+            fi
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Final image: ${IMAGE_NAME}:$TAG"
+
+      - name: Show final image name
+        run: |
+          echo "Will build & push image: ${{ env.IMAGE_NAME }}:${{ steps.determine_tag.outputs.tag }}"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.determine_tag.outputs.tag }}
+
+      - name: Confirm Build Success
+        run: |
+          echo "Successfully built and pushed image:"
+          echo "${{ env.IMAGE_NAME }}:${{ steps.determine_tag.outputs.tag }}"
