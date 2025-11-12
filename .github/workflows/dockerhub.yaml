@@ -13,7 +13,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     env:
-      IMAGE_NAME: "muralisocial123/ust-test-image"
+      IMAGE_NAME: "sanju292593/ust-test-image"
 
     steps:
       - name: Checkout repository (fetch all tags)
