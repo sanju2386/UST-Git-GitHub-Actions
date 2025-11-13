@@ -46,6 +46,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Ensure ECR repository exists
+        shell
         run: |
           echo "Checking if ECR repository exists: ${ECR_REPOSITORY}"
           aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" >/dev/null 2>&1 || \
