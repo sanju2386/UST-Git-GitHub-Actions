@@ -45,15 +45,39 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure ECR repository exists
+      - name: ECR diagnostics — whoami & describe output
         shell: bash
+        env:
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          AWS_REGION: ${{ env.AWS_REGION }}
         run: |
-          echo "Checking if ECR repository exists: ${ECR_REPOSITORY}"
-          if ! aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" >/dev/null 2>&1; then
-            echo "ERROR: ECR repository '${ECR_REPOSITORY}' not found or access denied."
+          set -euo pipefail
+      
+          echo "=== 1) Caller identity (STS) ==="
+          aws sts get-caller-identity || { echo "::error::STS failed - check credentials"; exit 10; }
+      
+          echo; echo "=== 2) AWS CLI config ==="
+          aws configure list || true
+      
+          echo; echo "=== 3) Describe ECR repo (raw output) ==="
+          aws_out=$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" 2>&1) || true
+          printf '%s\n' "$aws_out"
+      
+          echo; echo "=== 4) Interpret result ==="
+          if echo "$aws_out" | grep -q 'RepositoryNotFoundException'; then
+            echo "::error::REPO_NOT_FOUND"
             exit 1
           fi
-          echo "ECR repository verified: ${ECR_REPOSITORY}"
+          if echo "$aws_out" | grep -qi 'AccessDenied\|AccessDeniedException\|not authorized'; then
+            echo "::error::ACCESS_DENIED"
+            exit 2
+          fi
+          if [ -n "$aws_out" ]; then
+            echo "::error::UNEXPECTED_AWS_ERROR"
+            exit 3
+          fi
+      
+          echo "ECR repository exists and is accessible: ${ECR_REPOSITORY}"
 
       - name: Login to Amazon ECR
         id: login-ecr
