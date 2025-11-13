@@ -2,43 +2,48 @@ name: Build and Push Docker Image to ECR (Manual)
 
 on:
   push:
-    branches: [ master ] 
+    branches: [ master ]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Docker image tag (must match v<MAJOR>.<MINOR>.<PATCH> format, e.g., v1.0.0)'
+        description: 'Docker image tag (vMAJOR.MINOR.PATCH, e.g. v1.0.0)'
         required: true
         default: 'v1.0.0'
 
 env:
-  ECR_REGISTRY: "891377198078:repository/sanju/ust_demo_repo"
-  ECR_REPOSITORY: "sanju/ust_demo_repo"
   AWS_REGION: "us-east-1"
+  # DO NOT set ECR_REGISTRY here to a wrong value. We'll export it after checking the repo.
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate tag format
-        id: validate
-        run: |
-          TAG="${{ github.event.inputs.tag }}"
-          echo "Provided tag: $TAG"
-
-          # Validate semantic versioning (vX.Y.Z)
-          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Invalid tag format! Expected pattern: v<MAJOR>.<MINOR>.<PATCH> (example: v1.0.0)"
-            exit 1
-          fi
-
-          echo "Tag validation successful: $TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Determine tag (supports workflow_dispatch and push)
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            # For push events use tag derived from ref (you can adjust to your strategy)
+            # If the push is to a branch, use branch name; if pushing annotated tag, use ref_name
+            TAG="${GITHUB_REF##*/}"
+            # If you want to require explicit tags on push change logic here.
+          fi
+
+          echo "Using tag: $TAG"
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid tag format: $TAG. Expected vMAJOR.MINOR.PATCH (example: v1.0.0)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -48,70 +53,61 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify ECR repository exists and export registry info
+        id: ecr-check
         shell: bash
         env:
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          ECR_REPOSITORY: "sanju/ust_demo_repo"
           AWS_REGION: ${{ env.AWS_REGION }}
-          
         run: |
-          echo "Runing dummy scripts "
-          # set -euo pipefail
-      
-          # REPO="${ECR_REPOSITORY}"
-          # echo "Checking if ECR repository exists: ${REPO}"
-      
-          # # Run describe and capture stderr/stdout
-          # aws_out=$(aws ecr describe-repositories --repository-names "${REPO}" 2>&1) || true
-      
-          # if echo "$aws_out" | grep -q 'RepositoryNotFoundException'; then
-          #   echo "::error::ECR repository not found: ${REPO}"
-          #   exit 1
-          # fi
-      
-          # if echo "$aws_out" | grep -qi 'AccessDenied\|AccessDeniedException\|not authorized'; then
-          #   echo "::error::Access denied while checking ECR repository: ${REPO}"
-          #   echo "::error::Details: $aws_out"
-          #   exit 2
-          # fi
-      
-          # # If aws_out contains JSON (success), extract repositoryUri
-          # repo_uri=$(aws ecr describe-repositories --repository-names "${REPO}" --query 'repositories[0].repositoryUri' --output text 2>/dev/null) || true
-      
-          # if [ -z "$repo_uri" ]; then
-          #   echo "::error::Unexpected AWS output while checking ECR repo:"
-          #   printf '%s\n' "$aws_out"
-          #   exit 3
-          # fi
-      
-          # Export registry host and full registry path for later docker steps
-          registry_host=${repo_uri%/*}   # strip trailing /<repo> to get host
+          set -euo pipefail
+
+          REPO="${ECR_REPOSITORY}"
+          echo "Checking if ECR repository exists: ${REPO}"
+
+          aws_out=$(aws ecr describe-repositories --repository-names "${REPO}" 2>&1) || true
+
+          if echo "$aws_out" | grep -q 'RepositoryNotFoundException'; then
+            echo "::error::ECR repository not found: ${REPO}"
+            exit 1
+          fi
+
+          if echo "$aws_out" | grep -qi 'AccessDenied\|AccessDeniedException\|not authorized'; then
+            echo "::error::Access denied while checking ECR repository: ${REPO}"
+            echo "::error::Details: $aws_out"
+            exit 2
+          fi
+
+          # Success path: extract repositoryUri
+          repo_uri=$(aws ecr describe-repositories --repository-names "${REPO}" --query 'repositories[0].repositoryUri' --output text)
+          if [ -z "$repo_uri" ] || [ "$repo_uri" = "None" ]; then
+            echo "::error::Could not determine repositoryUri. Raw output:"
+            printf '%s\n' "$aws_out"
+            exit 3
+          fi
+
+          registry_host=${repo_uri%/*}
           echo "Repository exists: ${repo_uri}"
-          echo "Setting ECR_REGISTRY_HOST=${registry_host}"
-          echo "Setting ECR_REGISTRY=${repo_uri}"
-      
-          # Make available to later steps in the same job
           echo "ECR_REGISTRY_HOST=${registry_host}" >> $GITHUB_ENV
           echo "ECR_REGISTRY=${repo_uri}" >> $GITHUB_ENV
-      
           echo "::notice::ECR repository verified and variables exported."
-  
-  
-        - name: Login to Amazon ECR
-          id: login-ecr
-          uses: aws-actions/amazon-ecr-login@v2
-  
-        - name: Set up Docker Buildx
-          uses: docker/setup-buildx-action@v3
-  
-        - name: Build and Push Docker Image to ECR
-          uses: docker/build-push-action@v5
-          with:
-            context: .
-            file: ./Dockerfile
-            push: true
-            tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.validate.outputs.tag }}
-  
-        - name: Confirm Build Success
-          run: |
-            echo "Successfully built and pushed image:"
-            echo "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.validate.outputs.tag }}"
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image to ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # ECR_REGISTRY exported above is the full repo URI, e.g.
+          # 891377198078.dkr.ecr.us-east-1.amazonaws.com/sanju/ust_demo_repo
+          tags: ${{ env.ECR_REGISTRY }}:${{ steps.tag.outputs.tag }}
+
+      - name: Confirm Build Success
+        run: |
+          echo "Successfully built and pushed image:"
+          echo "${{ env.ECR_REGISTRY }}:${{ steps.tag.outputs.tag }}"
