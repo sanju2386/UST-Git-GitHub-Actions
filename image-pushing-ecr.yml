@@ -9,7 +9,7 @@ on:
         default: 'v1.0.0'
 
 env:
-  ECR_REGISTRY: "891377198078:repository/sanju/ust_demo_repo"
+  ECR_REGISTRY: "891377198078.dkr.ecr.us-east-1.amazonaws.com/sanju/ust_demo_repo"
   ECR_REPOSITORY: "sanju/ust_demo_repo"
   AWS_REGION: "us-east-1"
 
