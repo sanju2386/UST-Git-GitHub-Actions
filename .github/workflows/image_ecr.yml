@@ -96,7 +96,20 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
+     - name: Debug ECR creds & login
+       shell: bash
+       run: |
+         set -euo pipefail
+         echo "Caller:"
+         aws sts get-caller-identity
+    
+         echo; echo "Try to get ECR auth token (should succeed):"
+         aws ecr get-authorization-token --region ${{ env.AWS_REGION }} | head -c 200 || true
+    
+         echo; echo "Docker login (explicit test):"
+         aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin "${{ env.ECR_REGISTRY_HOST }}" || { echo "::error::docker login failed"; exit 20; }
+    
+         echo "::notice::docker login success" 
       - name: Build and Push Docker Image to ECR
         uses: docker/build-push-action@v5
         with:
