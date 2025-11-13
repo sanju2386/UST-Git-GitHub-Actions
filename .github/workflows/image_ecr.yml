@@ -39,13 +39,13 @@ jobs:
           fetch-depth: 0
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET }}
-          aws-region: ${{ env.AWS_REGION }}
+  uses: aws-actions/configure-aws-credentials@v2
+  with:
+    aws-access-key-id: ${{ secrets.AWS_ACCESSKEY }}
+    aws-secret-access-key: ${{ secrets.AWS_SECRET }}
+    aws-region: ${{ env.AWS_REGION }}
 
-      - name: ECR diagnostics — whoami & describe output
+      - name: Verify ECR repository exists and export registry info
         shell: bash
         env:
           ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
@@ -53,48 +53,61 @@ jobs:
         run: |
           set -euo pipefail
       
-          echo "=== 1) Caller identity (STS) ==="
-          aws sts get-caller-identity || { echo "::error::STS failed - check credentials"; exit 10; }
+          REPO="${ECR_REPOSITORY}"
+          echo "Checking if ECR repository exists: ${REPO}"
       
-          echo; echo "=== 2) AWS CLI config ==="
-          aws configure list || true
+          # Run describe and capture stderr/stdout
+          aws_out=$(aws ecr describe-repositories --repository-names "${REPO}" 2>&1) || true
       
-          echo; echo "=== 3) Describe ECR repo (raw output) ==="
-          aws_out=$(aws ecr describe-repositories --repository-names "${ECR_REPOSITORY}" 2>&1) || true
-          printf '%s\n' "$aws_out"
-      
-          echo; echo "=== 4) Interpret result ==="
           if echo "$aws_out" | grep -q 'RepositoryNotFoundException'; then
-            echo "::error::REPO_NOT_FOUND"
+            echo "::error::ECR repository not found: ${REPO}"
             exit 1
           fi
+      
           if echo "$aws_out" | grep -qi 'AccessDenied\|AccessDeniedException\|not authorized'; then
-            echo "::error::ACCESS_DENIED"
+            echo "::error::Access denied while checking ECR repository: ${REPO}"
+            echo "::error::Details: $aws_out"
             exit 2
           fi
-          if [ -n "$aws_out" ]; then
-            echo "::error::UNEXPECTED_AWS_ERROR"
+      
+          # If aws_out contains JSON (success), extract repositoryUri
+          repo_uri=$(aws ecr describe-repositories --repository-names "${REPO}" --query 'repositories[0].repositoryUri' --output text 2>/dev/null) || true
+      
+          if [ -z "$repo_uri" ]; then
+            echo "::error::Unexpected AWS output while checking ECR repo:"
+            printf '%s\n' "$aws_out"
             exit 3
           fi
       
-          echo "ECR repository exists and is accessible: ${ECR_REPOSITORY}"
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and Push Docker Image to ECR
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.validate.outputs.tag }}
-
-      - name: Confirm Build Success
-        run: |
-          echo "Successfully built and pushed image:"
-          echo "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.validate.outputs.tag }}"
+          # Export registry host and full registry path for later docker steps
+          registry_host=${repo_uri%/*}   # strip trailing /<repo> to get host
+          echo "Repository exists: ${repo_uri}"
+          echo "Setting ECR_REGISTRY_HOST=${registry_host}"
+          echo "Setting ECR_REGISTRY=${repo_uri}"
+      
+          # Make available to later steps in the same job
+          echo "ECR_REGISTRY_HOST=${registry_host}" >> $GITHUB_ENV
+          echo "ECR_REGISTRY=${repo_uri}" >> $GITHUB_ENV
+      
+          echo "::notice::ECR repository verified and variables exported."
+  
+  
+        - name: Login to Amazon ECR
+          id: login-ecr
+          uses: aws-actions/amazon-ecr-login@v2
+  
+        - name: Set up Docker Buildx
+          uses: docker/setup-buildx-action@v3
+  
+        - name: Build and Push Docker Image to ECR
+          uses: docker/build-push-action@v5
+          with:
+            context: .
+            file: ./Dockerfile
+            push: true
+            tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.validate.outputs.tag }}
+  
+        - name: Confirm Build Success
+          run: |
+            echo "Successfully built and pushed image:"
+            echo "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.validate.outputs.tag }}"
