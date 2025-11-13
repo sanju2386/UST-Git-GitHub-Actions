@@ -1,6 +1,8 @@
 name: Build and Push Docker Image to ECR (Manual)
 
 on:
+  push:
+    branches: [ master ] 
   workflow_dispatch:
     inputs:
       tag:
