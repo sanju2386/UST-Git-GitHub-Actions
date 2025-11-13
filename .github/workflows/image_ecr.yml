@@ -12,7 +12,7 @@ on:
 
 env:
   AWS_REGION: "us-east-1"
-  # DO NOT set ECR_REGISTRY here to a wrong value. We'll export it after checking the repo.
+  # ECR_REGISTRY will be exported after verifying the repo
 
 jobs:
   build-and-push:
@@ -32,10 +32,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
           else
-            # For push events use tag derived from ref (you can adjust to your strategy)
-            # If the push is to a branch, use branch name; if pushing annotated tag, use ref_name
             TAG="${GITHUB_REF##*/}"
-            # If you want to require explicit tags on push change logic here.
           fi
 
           echo "Using tag: $TAG"
@@ -77,7 +74,6 @@ jobs:
             exit 2
           fi
 
-          # Success path: extract repositoryUri
           repo_uri=$(aws ecr describe-repositories --repository-names "${REPO}" --query 'repositories[0].repositoryUri' --output text)
           if [ -z "$repo_uri" ] || [ "$repo_uri" = "None" ]; then
             echo "::error::Could not determine repositoryUri. Raw output:"
@@ -96,28 +92,29 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-     - name: Debug ECR creds & login
-       shell: bash
-       run: |
-         set -euo pipefail
-         echo "Caller:"
-         aws sts get-caller-identity
-    
-         echo; echo "Try to get ECR auth token (should succeed):"
-         aws ecr get-authorization-token --region ${{ env.AWS_REGION }} | head -c 200 || true
-    
-         echo; echo "Docker login (explicit test):"
-         aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin "${{ env.ECR_REGISTRY_HOST }}" || { echo "::error::docker login failed"; exit 20; }
-    
-         echo "::notice::docker login success" 
+
+      - name: Debug ECR creds & login
+        if: github.actor == 'sanju2386' || github.event_name == 'workflow_dispatch' # optional: run debug only when needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Caller:"
+          aws sts get-caller-identity || true
+
+          echo; echo "Try to get ECR auth token (short):"
+          aws ecr get-authorization-token --region ${{ env.AWS_REGION }} | head -c 200 || true
+
+          echo; echo "Docker login (explicit test):"
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin "${{ env.ECR_REGISTRY_HOST }}" || { echo "::error::docker login failed"; exit 20; }
+
+          echo "::notice::docker login success"
+
       - name: Build and Push Docker Image to ECR
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
-          # ECR_REGISTRY exported above is the full repo URI, e.g.
-          # 891377198078.dkr.ecr.us-east-1.amazonaws.com/sanju/ust_demo_repo
           tags: ${{ env.ECR_REGISTRY }}:${{ steps.tag.outputs.tag }}
 
       - name: Confirm Build Success
